@@ -5,6 +5,9 @@ d'appeler des outils, avec un système de **skills** inspiré de Claude Code :
 chaque compétence est un dossier autonome contenant sa documentation
 (`SKILL.md`) et ses outils Python (`tools.py`).
 
+
+![screenshot](https://github.com/zebulon75018/ollamacode/blob/main/image.png?raw=true)
+
 ## Installation
 
 ```bash
