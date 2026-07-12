@@ -1,12 +1,9 @@
-# OllamaCode CLI (Ollama + Skills)
+# Agent CLI (Ollama + Skills)
 
 Application CLI qui transforme un modèle Ollama en agent capable
 d'appeler des outils, avec un système de **skills** inspiré de Claude Code :
 chaque compétence est un dossier autonome contenant sa documentation
 (`SKILL.md`) et ses outils Python (`tools.py`).
-
-
-![screenshot](https://github.com/zebulon75018/ollamacode/blob/main/image.png?raw=true)
 
 ## Installation
 
@@ -49,7 +46,10 @@ L'interface TUI ajoute :
   navigue dans les messages précédemment envoyés (comme un shell),
 - un **éditeur du prompt système** (`Ctrl+S` ou `/system`) : dialogue de
   texte multi-ligne pré-rempli avec le prompt système actuel de l'agent,
-  avec boutons Enregistrer / Réinitialiser au défaut / Annuler.
+  avec boutons Enregistrer / Réinitialiser au défaut / Annuler,
+- une **configuration du serveur Ollama** (`Ctrl+O` ou `/host`) : dialogue
+  pour basculer entre un serveur local et un serveur distant, avec test de
+  connexion intégré (voir la section dédiée ci-dessous).
 
 Raccourcis clavier dans le champ de saisie :
 - `/` en début d'invite → ouvre la combobox de commandes
@@ -60,7 +60,8 @@ Raccourcis clavier dans le champ de saisie :
 - `Échap` → ferme la combobox sans modifier le texte saisi
 
 Raccourcis globaux TUI : `Ctrl+Q` quitter, `Ctrl+R` réinitialiser la
-conversation, `Ctrl+M` changer de modèle, `Ctrl+S` éditer le prompt système.
+conversation, `Ctrl+M` changer de modèle, `Ctrl+S` éditer le prompt système,
+`Ctrl+O` configurer le serveur Ollama.
 
 ## Prompt système personnalisable
 
@@ -100,7 +101,37 @@ python agent_tui.py --model qwen3 --skills-dir skills --confirm-tools run_comman
 - `--workspace` : dossier racine où sont sauvegardés les fichiers (manuellement via `write_file`/`create_directory`, ou automatiquement — voir ci-dessous)
 - `--no-auto-save` : désactive la sauvegarde automatique des blocs de code
 - `--system-file <chemin>` : charge le prompt système depuis un fichier texte au démarrage
+- `--host <url>` : serveur Ollama à contacter (local par défaut, ou distant — voir ci-dessous)
+- `--api-key <clé>` : jeton envoyé en `Authorization: Bearer ...` pour un serveur Ollama distant protégé
+- `--timeout <secondes>` : timeout réseau pour les requêtes vers le serveur Ollama
 - `--no-thinking` (CLI uniquement) : masque le raisonnement interne du modèle
+
+## Serveur Ollama local ou distant
+
+Par défaut, l'agent contacte Ollama en local (`http://localhost:11434`, ou
+la variable d'environnement `OLLAMA_HOST` si elle est définie). Il est
+possible de le pointer vers un serveur Ollama distant (une autre machine
+du réseau, un serveur dans le cloud, etc.) de plusieurs façons :
+
+- **Au démarrage** : `--host http://192.168.1.50:11434` (+ éventuellement
+  `--api-key <jeton>` si le serveur distant exige une authentification
+  `Authorization: Bearer ...`, et `--timeout <secondes>`).
+- **En cours de session** :
+  - **TUI** : `Ctrl+O` ou `/host` ouvre un dialogue avec un champ hôte, un
+    champ clé API (masqué), un champ timeout, un bouton **Tester** (vérifie
+    la connexion dans un thread séparé sans geler l'interface et affiche le
+    nombre de modèles trouvés ou l'erreur), **Enregistrer**, et **Local par
+    défaut** pour revenir instantanément en local.
+  - **CLI** : `/host <url>` change directement le serveur ; `/host` seul
+    guide pas à pas (hôte, clé API optionnelle, timeout optionnel, avec
+    proposition de tester la connexion) ; `/host local` revient au serveur
+    local par défaut.
+
+L'attribut `agent.host` (et `agent.client`, l'instance `ollama.Client`
+sous-jacente) est reconfigurable à tout moment via `agent.configure_host(...)`.
+Si le serveur configuré devient injoignable en cours de conversation (panne
+réseau, mauvaise URL...), l'agent l'indique clairement dans le chat au lieu
+de planter, avec un rappel du raccourci pour reconfigurer.
 
 ## Sauvegarde automatique des blocs de code
 
@@ -138,6 +169,8 @@ puisse créer des répertoires (avec parents) à la demande, en plus de
 | `/model` | Ouvre le sélecteur de modèle (interroge Ollama pour lister les modèles installés) |
 | `/model <nom>` | Change directement le modèle utilisé |
 | `/system` | Ouvre l'éditeur du prompt système (dialogue TUI, ou `$EDITOR`/saisie multi-ligne en CLI) |
+| `/host` | Configure le serveur Ollama (dialogue TUI, ou pas-à-pas en CLI) |
+| `/host <url>` | *(CLI)* change directement le serveur ; `/host local` revient au local |
 | `/thinking on\|off` | Active/désactive l'affichage du raisonnement |
 | `/workspace <chemin>` | Affiche ou change le dossier de sauvegarde des fichiers |
 | `/autosave on\|off` | Active/désactive la sauvegarde automatique des blocs de code |

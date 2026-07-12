@@ -35,6 +35,7 @@ Commandes disponibles :
   /model             Interroge Ollama et liste les modèles installés (numérotés)
   /model <nom>       Change directement le modèle utilisé
   /system            Édite le prompt système (ouvre $EDITOR, ou saisie multi-ligne)
+  /host              Affiche/configure le serveur Ollama (local ou distant)
   /thinking on|off   Active/désactive l'affichage du raisonnement du modèle
   /workspace <chemin> Affiche ou change le dossier de sauvegarde des fichiers
   /autosave on|off   Active/désactive la sauvegarde automatique des blocs de code
@@ -78,6 +79,26 @@ def main():
         default=None,
         help="Fichier texte contenant le prompt système à utiliser (sinon, prompt par défaut généré depuis les skills)",
     )
+    parser.add_argument(
+        "--host",
+        default=None,
+        help=(
+            "URL du serveur Ollama (ex: http://192.168.1.50:11434 pour un serveur "
+            "distant). Par défaut : variable d'environnement OLLAMA_HOST, sinon "
+            "http://localhost:11434"
+        ),
+    )
+    parser.add_argument(
+        "--api-key",
+        default=None,
+        help="Clé API / jeton envoyé en en-tête Authorization: Bearer ... (pour un serveur Ollama distant protégé)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="Timeout réseau en secondes pour les requêtes vers le serveur Ollama",
+    )
     args = parser.parse_args()
 
     skills = discover_skills(args.skills_dir)
@@ -96,10 +117,15 @@ def main():
         workspace_dir=args.workspace,
         auto_save_code=not args.no_auto_save,
         system=system_text,
+        host=args.host,
+        api_key=args.api_key,
+        timeout=args.timeout,
     )
     agent.add_system_prompt()
 
     print(BANNER)
+    print(f"Serveur Ollama : {agent.effective_host_label()}")
+    print(f"Modèle : {agent.model}\n")
     if not skills:
         print(f"⚠ Aucune skill détectée dans {args.skills_dir}")
     else:
@@ -158,6 +184,9 @@ def run_turn_interactive(agent: Agent, user_input: str) -> str:
                 print(f"\033[91mExécution de '{event['name']}' refusée.\033[0m")
             elif etype == "tool_error":
                 print(f"\033[91m{event['text']}\033[0m")
+            elif etype == "connection_error":
+                print(f"\033[91m{event['text']}\033[0m")
+                print("\033[2mAstuce : /host pour vérifier ou changer le serveur Ollama.\033[0m")
             elif etype == "tool_confirm":
                 answer = input(
                     f"\033[93m⚠ L'agent veut exécuter '{event['name']}' avec "
@@ -200,6 +229,8 @@ def handle_command(cmd: str, agent: Agent) -> bool:
             _pick_model_interactive(agent)
     elif name == "/system":
         _edit_system_prompt_interactive(agent)
+    elif name == "/host":
+        _configure_host_interactive(agent, arg)
     elif name == "/thinking":
         if arg.lower() in ("on", "off"):
             agent.show_thinking = arg.lower() == "on"
@@ -231,7 +262,7 @@ def _pick_model_interactive(agent: Agent) -> None:
     l'utilisateur en choisir un par numéro."""
     print("Recherche des modèles Ollama disponibles...")
     try:
-        models = list_ollama_models()
+        models = list_ollama_models(client=agent.client)
     except Exception as exc:
         print(
             f"\033[91mImpossible d'interroger Ollama ({exc}). "
@@ -261,6 +292,55 @@ def _pick_model_interactive(agent: Agent) -> None:
     selected = models[int(choice) - 1]["name"]
     agent.model = selected
     print(f"Modèle changé pour : {selected}")
+
+
+def _configure_host_interactive(agent: Agent, arg: str) -> None:
+    """Affiche/configure le serveur Ollama (local ou distant). Avec un
+    argument direct (`/host <url>` ou `/host local`), applique tout de
+    suite ; sans argument, guide l'utilisateur pas à pas (hôte, clé API
+    optionnelle, timeout optionnel, test de connexion optionnel)."""
+    print(f"Serveur Ollama actuel : {agent.effective_host_label()}")
+
+    if arg:
+        if arg.lower() in ("local", "localhost", "default"):
+            agent.configure_host(None)
+            print("Serveur remis en local (par défaut).")
+        else:
+            agent.configure_host(arg)
+            print(f"Serveur changé pour : {agent.effective_host_label()}")
+        return
+
+    new_host = input(
+        "Nouvel hôte (ex: http://192.168.1.50:11434 ; 'local' pour revenir au "
+        "défaut ; Entrée pour ne rien changer) : "
+    ).strip()
+    if not new_host:
+        print("Inchangé.")
+        return
+    if new_host.lower() in ("local", "localhost", "default"):
+        agent.configure_host(None)
+        print("Serveur remis en local (par défaut).")
+        return
+
+    api_key = input("Clé API / jeton (optionnel, Entrée pour aucun) : ").strip() or None
+    timeout_str = input("Timeout en secondes (optionnel, Entrée pour aucun) : ").strip()
+    timeout: Optional[float] = None
+    if timeout_str:
+        try:
+            timeout = float(timeout_str)
+        except ValueError:
+            print("Timeout invalide, ignoré.")
+
+    agent.configure_host(new_host, api_key=api_key, timeout=timeout)
+    print(f"Serveur changé pour : {agent.effective_host_label()}")
+
+    test = input("Tester la connexion maintenant ? (o/N) ").strip().lower()
+    if test in ("o", "oui", "y", "yes"):
+        try:
+            models = list_ollama_models(client=agent.client)
+            print(f"\033[92m✓ Connexion réussie ({len(models)} modèle(s) trouvé(s)).\033[0m")
+        except Exception as exc:
+            print(f"\033[91m✗ Échec de connexion : {exc}\033[0m")
 
 
 def _edit_system_prompt_interactive(agent: Agent) -> None:

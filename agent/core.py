@@ -13,6 +13,7 @@ TUI Textual, future interface web...) sans dupliquer la boucle agentique.
     {"type": "tool_result", "name": str, "result": str}
     {"type": "tool_denied", "name": str}
     {"type": "tool_error", "name": str, "text": str}
+    {"type": "connection_error", "text": str}
     {"type": "auto_save_detected", "name": str, "language": str}
     {"type": "done"}
 
@@ -37,7 +38,8 @@ import os
 import re
 from typing import Callable, Dict, Iterator, List, Optional, Set
 
-from ollama import chat, ChatResponse
+import ollama
+from ollama import ChatResponse
 
 # ----------------------------------------------------------------------
 # Détection des blocs de code + nom de fichier associé
@@ -107,6 +109,9 @@ class Agent:
         workspace_dir: str = ".",
         auto_save_code: bool = True,
         system: Optional[str] = None,
+        host: Optional[str] = None,
+        api_key: Optional[str] = None,
+        timeout: Optional[float] = None,
     ):
         self.model = model
         self.skills = skills
@@ -124,6 +129,41 @@ class Agent:
         # partir des skills actives.
         self.system: str = system if system is not None else self.default_system_prompt()
         self.messages: List[dict] = []
+
+        # Connexion au serveur Ollama — local par défaut (http://localhost:11434
+        # ou variable d'environnement OLLAMA_HOST), ou distant si `host` est
+        # fourni. Reconfigurable à tout moment via configure_host().
+        self.host: Optional[str] = host
+        self.api_key: Optional[str] = api_key
+        self.timeout: Optional[float] = timeout
+        self.client: ollama.Client = self._build_client()
+
+    # ------------------------------------------------------------------
+    def _build_client(self) -> ollama.Client:
+        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else None
+        return ollama.Client(host=self.host, headers=headers, timeout=self.timeout)
+
+    def configure_host(
+        self,
+        host: Optional[str],
+        api_key: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> None:
+        """Reconfigure la connexion au serveur Ollama (local ou distant) et
+        recrée le client sous-jacent. `host=None` revient au comportement
+        par défaut du client ollama (variable d'environnement OLLAMA_HOST,
+        sinon http://localhost:11434)."""
+        self.host = host or None
+        self.api_key = api_key or None
+        self.timeout = timeout
+        self.client = self._build_client()
+
+    def effective_host_label(self) -> str:
+        """Libellé lisible du serveur actuellement configuré, pour affichage."""
+        if self.host:
+            return self.host
+        env_host = os.environ.get("OLLAMA_HOST")
+        return env_host if env_host else "http://localhost:11434 (par défaut)"
 
     # ------------------------------------------------------------------
     def enabled_skills(self):
@@ -256,12 +296,19 @@ class Agent:
         available_functions = self.available_functions()
 
         while True:
-            response: ChatResponse = chat(
-                model=self.model,
-                messages=self.messages,
-                tools=self.tool_list(),
-                think=True,
-            )
+            try:
+                response: ChatResponse = self.client.chat(
+                    model=self.model,
+                    messages=self.messages,
+                    tools=self.tool_list(),
+                    think=True,
+                )
+            except Exception as exc:
+                yield {
+                    "type": "connection_error",
+                    "text": f"Impossible de contacter le serveur Ollama ({self.effective_host_label()}) : {exc}",
+                }
+                return
             self.messages.append(response.message)
 
             thinking = getattr(response.message, "thinking", None)
@@ -344,6 +391,8 @@ class Agent:
                 elif etype == "tool_denied":
                     print(f"\033[91mExécution de '{event['name']}' refusée.\033[0m")
                 elif etype == "tool_error":
+                    print(f"\033[91m{event['text']}\033[0m")
+                elif etype == "connection_error":
                     print(f"\033[91m{event['text']}\033[0m")
         except StopIteration:
             pass

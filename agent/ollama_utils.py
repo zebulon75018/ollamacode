@@ -1,6 +1,6 @@
 """
-Utilitaires pour interroger le serveur Ollama local — ici, la liste des
-modèles déjà installés (`ollama list` / `ollama pull ...`).
+Utilitaires pour interroger un serveur Ollama (local ou distant) — ici, la
+liste des modèles déjà installés (`ollama list` / `ollama pull ...`).
 """
 
 from __future__ import annotations
@@ -27,15 +27,21 @@ def _human_size(num_bytes: float) -> str:
     return f"{size:.1f}Po"
 
 
-def list_ollama_models() -> List[ModelInfo]:
-    """Interroge le serveur Ollama local et retourne la liste des modèles
+def list_ollama_models(client: Optional[ollama.Client] = None) -> List[ModelInfo]:
+    """Interroge un serveur Ollama et retourne la liste des modèles
     installés, triée par nom.
 
-    Peut lever une exception (ex: `ConnectionError`) si le serveur Ollama
-    n'est pas joignable — à l'appelant de gérer ce cas (afficher un message
-    d'erreur clair plutôt qu'une trace complète).
+    `client` : instance de `ollama.Client` déjà configurée (local ou
+    distant, avec ses éventuels en-têtes d'authentification). Si omis,
+    utilise le client par défaut du module `ollama` (localhost, ou
+    variable d'environnement OLLAMA_HOST).
+
+    Peut lever une exception (ex: `ConnectionError`, timeout) si le
+    serveur n'est pas joignable — à l'appelant de gérer ce cas (afficher
+    un message d'erreur clair plutôt qu'une trace complète).
     """
-    response = ollama.list()
+    target = client if client is not None else ollama
+    response = target.list()
     models: List[ModelInfo] = []
     for m in response.models:
         details = m.details

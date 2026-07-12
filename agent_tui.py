@@ -56,6 +56,7 @@ COMMANDS: List[Tuple[str, str]] = [
     ("/reset", "Réinitialise la conversation"),
     ("/model", "Ouvre le sélecteur de modèle (interroge Ollama)"),
     ("/system", "Ouvre l'éditeur du prompt système (rôle 'system')"),
+    ("/host", "Ouvre la configuration du serveur Ollama (local ou distant)"),
     ("/thinking", "Active/désactive l'affichage du raisonnement (on|off)"),
     ("/workspace", "Change le dossier de sauvegarde des fichiers"),
     ("/autosave", "Active/désactive la sauvegarde automatique des blocs de code (on|off)"),
@@ -69,6 +70,7 @@ HELP_TEXT = """[bold]Commandes :[/bold]
   /model             Ouvre le sélecteur de modèle (interroge Ollama)
   /model <nom>       Change directement le modèle utilisé
   /system            Ouvre l'éditeur du prompt système (rôle "system")
+  /host              Ouvre la configuration du serveur Ollama (local/distant)
   /thinking on|off   Active/désactive l'affichage du raisonnement
   /workspace <chemin> Affiche ou change le dossier de sauvegarde des fichiers
   /autosave on|off   Active/désactive la sauvegarde automatique des blocs de code
@@ -76,7 +78,7 @@ HELP_TEXT = """[bold]Commandes :[/bold]
 
 [bold]Astuce :[/bold] cliquez (ou Entrée) sur une skill dans le panneau de
 gauche pour l'activer / la désactiver. Ctrl+M ouvre le sélecteur de modèle,
-Ctrl+S ouvre l'éditeur du prompt système.
+Ctrl+S ouvre l'éditeur du prompt système, Ctrl+O configure le serveur Ollama.
 Tapez "/" dans l'invite pour voir la liste des commandes ; flèches ↑/↓ pour
 naviguer dans les suggestions (ou dans l'historique des messages envoyés)."""
 
@@ -255,6 +257,127 @@ class SystemPromptModal(ModalScreen[Optional[str]]):
             self.dismiss(None)
 
 
+class HostConfigModal(ModalScreen[Optional[dict]]):
+    """Dialogue de configuration du serveur Ollama : hôte local (par
+    défaut) ou distant (URL + clé API optionnelle), avec un bouton pour
+    tester la connexion avant de valider."""
+
+    DEFAULT_CSS = """
+    HostConfigModal {
+        align: center middle;
+    }
+    #host-dialog {
+        width: 70;
+        height: auto;
+        border: thick $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    #host-dialog > Label {
+        padding-bottom: 1;
+    }
+    #host-dialog > Label.title {
+        text-style: bold;
+    }
+    #host-status {
+        padding: 1 0;
+        height: auto;
+    }
+    #host-buttons {
+        align: center middle;
+        height: auto;
+        padding-top: 1;
+    }
+    #host-buttons Button {
+        margin: 0 1;
+    }
+    """
+
+    def __init__(
+        self,
+        current_host: Optional[str],
+        current_api_key: Optional[str],
+        current_timeout: Optional[float],
+    ):
+        super().__init__()
+        self.current_host = current_host or ""
+        self.current_api_key = current_api_key or ""
+        self.current_timeout = str(current_timeout) if current_timeout else ""
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="host-dialog"):
+            yield Label("Serveur Ollama (local ou distant)", classes="title")
+            yield Label("Hôte — ex: http://192.168.1.50:11434 (vide = local par défaut)")
+            yield Input(value=self.current_host, placeholder="http://localhost:11434", id="host-input")
+            yield Label("Clé API / jeton (optionnel — envoyé en Authorization: Bearer ...)")
+            yield Input(value=self.current_api_key, placeholder="(optionnel)", password=True, id="host-apikey-input")
+            yield Label("Timeout en secondes (optionnel)")
+            yield Input(value=self.current_timeout, placeholder="(optionnel)", id="host-timeout-input")
+            yield Label("", id="host-status")
+            with Horizontal(id="host-buttons"):
+                yield Button("Tester", id="test")
+                yield Button("Enregistrer", id="save", variant="success")
+                yield Button("Local par défaut", id="local", variant="warning")
+                yield Button("Annuler", id="cancel", variant="primary")
+
+    def on_mount(self) -> None:
+        self.query_one("#host-input", Input).focus()
+
+    def _collect_values(self):
+        host = self.query_one("#host-input", Input).value.strip() or None
+        api_key = self.query_one("#host-apikey-input", Input).value.strip() or None
+        timeout_str = self.query_one("#host-timeout-input", Input).value.strip()
+        timeout: Optional[float] = None
+        if timeout_str:
+            try:
+                timeout = float(timeout_str)
+            except ValueError:
+                timeout = None
+        return host, api_key, timeout
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cancel":
+            self.dismiss(None)
+        elif event.button.id == "local":
+            self.query_one("#host-input", Input).value = ""
+            self.query_one("#host-apikey-input", Input).value = ""
+            self.query_one("#host-timeout-input", Input).value = ""
+            self.query_one("#host-status", Label).update("")
+        elif event.button.id == "save":
+            host, api_key, timeout = self._collect_values()
+            self.dismiss({"host": host, "api_key": api_key, "timeout": timeout})
+        elif event.button.id == "test":
+            self._test_connection()
+
+    def _test_connection(self) -> None:
+        host, api_key, timeout = self._collect_values()
+        self.query_one("#host-status", Label).update("[dim]Test de connexion en cours...[/dim]")
+        self.app.run_worker(
+            partial(self._do_test, host, api_key, timeout),
+            thread=True,
+            exclusive=True,
+            group="host_test",
+        )
+
+    def _do_test(self, host: Optional[str], api_key: Optional[str], timeout: Optional[float]) -> None:
+        import ollama as ollama_module
+
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
+        try:
+            client = ollama_module.Client(host=host, headers=headers, timeout=timeout or 5.0)
+            response = client.list()
+            n = len(response.models)
+            label = host or "localhost (par défaut)"
+            self.app.call_from_thread(
+                self._update_status, f"[green]✓ Connexion réussie à {label} ({n} modèle(s))[/green]"
+            )
+        except Exception as exc:
+            self.app.call_from_thread(self._update_status, f"[red]✗ Échec de connexion : {exc}[/red]")
+
+    def _update_status(self, text: str) -> None:
+        self.query_one("#host-status", Label).update(text)
+
+
 class PromptInput(Input):
     """Champ de saisie personnalisé : gère la navigation clavier vers la
     combobox de commandes (/xxx) et l'historique des invites, en déléguant
@@ -339,6 +462,7 @@ class AgentTUI(App):
         Binding("ctrl+r", "do_reset", "Réinitialiser"),
         Binding("ctrl+m", "pick_model", "Changer modèle"),
         Binding("ctrl+s", "edit_system_prompt", "Prompt système"),
+        Binding("ctrl+o", "configure_host", "Serveur Ollama"),
     ]
 
     def __init__(self, agent: Agent):
@@ -363,11 +487,16 @@ class AgentTUI(App):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.title = f"Agent TUI — modèle: {self.agent.model}"
+        self._update_title()
         self._refresh_skills_list()
         log = self.query_one("#chat-log", RichLog)
         log.write("[bold cyan]Agent TUI prêt.[/bold cyan] Tapez /help pour l'aide.")
+        log.write(f"[dim]Serveur Ollama : {self.agent.effective_host_label()}[/dim]")
         self.query_one("#chat-input", Input).focus()
+
+    def _update_title(self) -> None:
+        self.title = f"Agent TUI — modèle: {self.agent.model}"
+        self.sub_title = f"Ollama: {self.agent.effective_host_label()}"
 
     # ------------------------------------------------------------------
     def _refresh_skills_list(self) -> None:
@@ -513,12 +642,14 @@ class AgentTUI(App):
         elif name == "/model":
             if arg:
                 self.agent.model = arg
-                self.title = f"Agent TUI — modèle: {arg}"
+                self._update_title()
                 log.write(f"[yellow]Modèle changé pour : {arg}[/yellow]")
             else:
                 self.action_pick_model()
         elif name == "/system":
             self.action_edit_system_prompt()
+        elif name == "/host":
+            self.action_configure_host()
         elif name == "/thinking":
             if arg.lower() in ("on", "off"):
                 self.agent.show_thinking = arg.lower() == "on"
@@ -563,6 +694,25 @@ class AgentTUI(App):
         )
 
     # ------------------------------------------------------------------
+    # Configuration du serveur Ollama (local ou distant).
+    # ------------------------------------------------------------------
+    def action_configure_host(self) -> None:
+        def callback(result: Optional[dict]) -> None:
+            if result is not None:
+                self.agent.configure_host(
+                    result["host"], api_key=result["api_key"], timeout=result["timeout"]
+                )
+                self._update_title()
+                self._log(
+                    f"[yellow]Serveur Ollama configuré : {self.agent.effective_host_label()}[/yellow]"
+                )
+
+        self.push_screen(
+            HostConfigModal(self.agent.host, self.agent.api_key, self.agent.timeout),
+            callback,
+        )
+
+    # ------------------------------------------------------------------
     # Sélecteur de modèle : interroge Ollama (ollama.list()) dans un thread
     # worker (appel réseau bloquant), puis affiche un modal de sélection.
     # ------------------------------------------------------------------
@@ -572,7 +722,7 @@ class AgentTUI(App):
 
     def _fetch_models(self) -> None:
         try:
-            models = list_ollama_models()
+            models = list_ollama_models(client=self.agent.client)
         except Exception as exc:
             self.call_from_thread(
                 self._log,
@@ -595,7 +745,7 @@ class AgentTUI(App):
         def callback(selected: Optional[str]) -> None:
             if selected:
                 self.agent.model = selected
-                self.title = f"Agent TUI — modèle: {selected}"
+                self._update_title()
                 self._log(f"[yellow]Modèle changé pour : {selected}[/yellow]")
 
         self.push_screen(ModelPickerModal(models, self.agent.model), callback)
@@ -639,6 +789,11 @@ class AgentTUI(App):
             self.call_from_thread(self._log, f"[red]Exécution de '{event['name']}' refusée.[/red]")
         elif etype == "tool_error":
             self.call_from_thread(self._log, f"[red]{event['text']}[/red]")
+        elif etype == "connection_error":
+            self.call_from_thread(
+                self._log,
+                f"[red]{event['text']}[/red]\n[dim]Astuce : Ctrl+O pour vérifier/changer le serveur Ollama.[/dim]",
+            )
         elif etype == "tool_confirm":
             return self._ask_confirmation_blocking(event["name"], event["args"])
         return None
@@ -693,6 +848,26 @@ def main():
         default=None,
         help="Fichier texte contenant le prompt système à utiliser (sinon, prompt par défaut généré depuis les skills)",
     )
+    parser.add_argument(
+        "--host",
+        default=None,
+        help=(
+            "URL du serveur Ollama (ex: http://192.168.1.50:11434 pour un serveur "
+            "distant). Par défaut : variable d'environnement OLLAMA_HOST, sinon "
+            "http://localhost:11434"
+        ),
+    )
+    parser.add_argument(
+        "--api-key",
+        default=None,
+        help="Clé API / jeton envoyé en en-tête Authorization: Bearer ... (pour un serveur Ollama distant protégé)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="Timeout réseau en secondes pour les requêtes vers le serveur Ollama",
+    )
     args = parser.parse_args()
 
     skills = discover_skills(args.skills_dir)
@@ -710,6 +885,9 @@ def main():
         workspace_dir=args.workspace,
         auto_save_code=not args.no_auto_save,
         system=system_text,
+        host=args.host,
+        api_key=args.api_key,
+        timeout=args.timeout,
     )
     agent.add_system_prompt()
 
